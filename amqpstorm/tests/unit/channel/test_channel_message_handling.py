@@ -279,6 +279,77 @@ class ChannelBuildMessageTests(TestFramework):
         # The empty-timer must not be consulted when there is no consumer.
         monotonic.assert_not_called()
 
+    def test_channel_build_inbound_messages_empty_timeout_none_breaks(self):
+        channel = Channel(0, FakeConnection(), 360)
+        channel.set_state(Channel.OPEN)
+        channel._inbound = collections.deque()
+        channel.add_consumer_tag('travis-ci')
+
+        monotonic = mock.Mock(side_effect=[0.0, 1.5])
+
+        with mock.patch('amqpstorm.channel.time.monotonic', monotonic), \
+                mock.patch('amqpstorm.channel.time.sleep'):
+            messages = list(
+                channel.build_inbound_messages(break_on_empty=True,
+                                               empty_timeout=None)
+            )
+
+        self.assertEqual(messages, [])
+        # empty_timeout=None exits as soon as the queue is empty; the timer is
+        # never consulted, even with an active consumer.
+        monotonic.assert_not_called()
+
+    def test_channel_build_inbound_messages_empty_timeout_custom_value(self):
+        channel = Channel(0, FakeConnection(), 360)
+        channel.set_state(Channel.OPEN)
+        channel._inbound = collections.deque()
+        channel.add_consumer_tag('travis-ci')
+
+        monotonic = mock.Mock(side_effect=[0.0, 0.6])
+
+        with mock.patch('amqpstorm.channel.time.monotonic', monotonic), \
+                mock.patch('amqpstorm.channel.time.sleep'):
+            messages = list(
+                channel.build_inbound_messages(break_on_empty=True,
+                                               empty_timeout=0.5)
+            )
+
+        self.assertEqual(messages, [])
+        # Two observations: start the timer, then confirm the threshold passed.
+        self.assertEqual(monotonic.call_count, 2)
+
+    def test_channel_build_inbound_messages_keeps_in_flight_after_cancel(self):
+        """A lone Basic.Deliver is queued (header/body still arriving) when the
+        consumer is cancelled. The loop must not break on the partial frame; it
+        should wait for the rest and still deliver the message.
+        """
+        channel = Channel(0, FakeConnection(), 360)
+        channel.set_state(Channel.OPEN)
+        channel.add_consumer_tag('travis-ci')
+
+        message = self.message.encode('utf-8')
+        deliver = commands.Basic.Deliver()
+        header = ContentHeader(body_size=len(message))
+        body = ContentBody(value=message)
+        channel._inbound = collections.deque([deliver])
+
+        state = {'sleeps': 0}
+
+        def fake_sleep(_):
+            state['sleeps'] += 1
+            if state['sleeps'] == 1:
+                channel.remove_consumer_tag()
+            elif state['sleeps'] == 2:
+                channel._inbound.extend([header, body])
+
+        with mock.patch('amqpstorm.channel.time.sleep', fake_sleep):
+            messages = list(
+                channel.build_inbound_messages(break_on_empty=True)
+            )
+
+        self.assertEqual(len(messages), 1)
+        self.assertIsInstance(messages[0], Message)
+
     def test_channel_build_no_message_but_inbound_not_empty(self):
         channel = Channel(0, FakeConnection(), 360)
         channel.set_state(Channel.OPEN)
