@@ -174,8 +174,9 @@ class Channel(BaseChannel):
         :param float,None empty_timeout: How long, in seconds, the inbound
                                     queue must stay continuously empty before
                                     ``break_on_empty`` exits the loop while a
-                                    consumer is active. A None value exits as
-                                    soon as the queue is empty, without waiting.
+                                    consumer is active. A falsy value (``None``
+                                    or ``0``) exits as soon as the queue is
+                                    empty, without waiting.
         :raises AMQPInvalidArgument: Invalid Parameters
         :raises AMQPChannelError: Raises if the channel encountered an error.
         :raises AMQPConnectionError: Raises if the connection
@@ -213,7 +214,7 @@ class Channel(BaseChannel):
                     if self._user_initiated_close():
                         return
                     raise
-                if not self.consumer_tags:
+                if not self.consumer_tags and not self._inbound:
                     break
                 time.sleep(IDLE_WAIT)
                 if break_on_empty and not self._inbound:
@@ -432,6 +433,8 @@ class Channel(BaseChannel):
 
         :return:
         """
+        if not self._consumer_callbacks:
+            raise AMQPChannelError('no consumer callback defined')
         while not self.is_closed and self.consumer_tags:
             self.process_data_events(
                 to_tuple=to_tuple,
